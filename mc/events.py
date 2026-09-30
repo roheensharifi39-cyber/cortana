@@ -18,5 +18,5 @@ async def emit(type: str, message: str = "", *, actor: str | None = None, subjec
     }
     try:
         await client().post(f"{hub_url()}/events", json=event, timeout=3)
-    except httpx.HTTPError:
+    except (httpx.HTTPError, RuntimeError):
         pass  # the dashboard is optional; never break an agent because the hub is down

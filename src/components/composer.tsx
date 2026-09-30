@@ -1,5 +1,5 @@
 "use client";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowRight } from "lucide-react";
 import { useControl } from "./provider";
@@ -39,6 +39,9 @@ export function MissionComposer({
   const lock = useRef(false);
   const key = useRef<string | null>(null);
   const input = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    input.current?.focus();
+  }, []);
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (lock.current) return;
@@ -85,6 +88,7 @@ export function MissionComposer({
           ref={input}
           id={inputId ?? (compact ? "dialog-objective" : "objective")}
           value={objective}
+          autoFocus
           maxLength={2000}
           rows={3}
           onChange={(e) => {

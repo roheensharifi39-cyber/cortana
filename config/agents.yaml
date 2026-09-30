@@ -64,6 +64,39 @@ agents:
     capabilities: [compliance.review]
     description: Reviews websites for missing disclaimers, accessibility basics and risky claims.
 
+  shield:
+    name: Shield Security
+    org: ShieldSec
+    label: shield
+    domain: shieldsec.xyz
+    version: 1.0.0
+    port: 8007
+    role: vendor
+    capabilities: [security.review, secrets.review, dependency.audit, deployment.review]
+    description: Reviews mission artifacts for secrets, vulnerabilities, dependency risks and insecure configs.
+
+  imagescout:
+    name: Image Scout
+    org: ImageScout
+    label: imagescout
+    domain: imagescout.xyz
+    version: 1.0.0
+    port: 8008
+    role: vendor
+    capabilities: [image.search, web.research]
+    description: Discovers high-resolution imagery and public web research assets for the mission.
+
+  rightscheck:
+    name: Rights Check
+    org: RightsCheck
+    label: rightscheck
+    domain: rightscheck.xyz
+    version: 1.0.0
+    port: 8009
+    role: vendor
+    capabilities: [image.license_review]
+    description: Inspects media licenses, copyright clearances, and usage rights for creative assets.
+
   impostor:
     name: Impostor
     org: Unknown
@@ -81,6 +114,9 @@ policy:
     - webforge.xyz
     - sitesmith.xyz
     - legalcheck.xyz
+    - shieldsec.xyz
+    - imagescout.xyz
+    - rightscheck.xyz
   # Approved versions, keyed by agent label (or host). A different version pauses the mission
   # for approval. Labels rather than hosts, so the pin survives moving to a real domain.
   version_pins:
@@ -92,6 +128,9 @@ policy:
     - webforge
     - sitesmith
     - compliance
+    - shield
+    - imagescout
+    - rightscheck
 
   # What a hired agent may DO while it works, per kind of job. Passing the Trust Gate gets an
   # agent through the door; this is what it is allowed to touch once inside. The Guardian
@@ -110,6 +149,27 @@ policy:
     compliance.review:
       - mission.read:site
       - artifact.write:mission
+    security.review:
+      - mission.read:artifacts
+      - artifact.write:mission
+    secrets.review:
+      - mission.read:artifacts
+      - artifact.write:mission
+    dependency.audit:
+      - mission.read:artifacts
+      - artifact.write:mission
+    deployment.review:
+      - mission.read:artifacts
+      - artifact.write:mission
+    image.search:
+      - mission.read:brief
+      - artifact.write:mission
+    image.license_review:
+      - mission.read:images
+      - artifact.write:mission
+    web.research:
+      - mission.read:brief
+      - artifact.write:mission
 
   # Which brain each kind of work uses. LLM_MODE in .env overrides all of it: LLM_MODE=offline
   # makes the whole system deterministic for rehearsals, LLM_MODE=gemini forces the model
@@ -124,6 +184,16 @@ policy:
     site.generate: offline
     # Good at reading a page for problems — and the rule checks below it are never skipped.
     compliance.review: gemini
+    security.review: gemini
+    secrets.review: gemini
+    dependency.audit: offline
+    deployment.review: gemini
+    image.search: gemini
+    image.license_review: gemini
+    web.research: gemini
+    orchestrator.select_candidate: gemini
+    orchestrator.refusal: gemini
+    orchestrator.supervise: gemini
 
   # A grant is not a permanent hire. It covers one mission and then it lapses.
   grant_ttl_seconds: 900

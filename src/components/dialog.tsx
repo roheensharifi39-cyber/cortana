@@ -16,8 +16,13 @@ export function Dialog({
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
-    if (open && !ref.current?.open) ref.current?.showModal();
-    else if (!open && ref.current?.open) ref.current?.close();
+    if (open && !ref.current?.open) {
+      ref.current?.showModal();
+      const target = ref.current?.querySelector<HTMLTextAreaElement | HTMLInputElement>("textarea, input");
+      target?.focus();
+    } else if (!open && ref.current?.open) {
+      ref.current?.close();
+    }
   }, [open]);
   return (
     <dialog

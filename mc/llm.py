@@ -59,7 +59,7 @@ async def generate_json(system: str, prompt: str, fallback: Callable[[], dict], 
 
         client = genai.Client(api_key=env("GEMINI_API_KEY"))
         resp = await client.aio.models.generate_content(
-            model=env("GEMINI_MODEL", "gemini-2.5-flash"),
+            model=env("GEMINI_MODEL", "gemini-3.6-flash"),
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=system,

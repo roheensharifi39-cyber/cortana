@@ -40,6 +40,19 @@ test("validate blank and oversized objectives", () => {
     false,
   );
 });
+test("preserves leading character verbatim without dropping the first letter", () => {
+  const objective = "Build a premium website";
+  const parsed = CreateMissionRequest.safeParse({
+    objective,
+    idempotencyKey: "test-key",
+  });
+  assert.equal(parsed.success, true);
+  if (parsed.success) {
+    assert.equal(parsed.data.objective, objective);
+    assert.equal(parsed.data.objective[0], "B");
+    assert.notEqual(parsed.data.objective, "uild a premium website");
+  }
+});
 test("concurrent idempotent submissions produce one mission; changed payload rejected", async () => {
   const api = new MockControlApi();
   const [a, b] = await Promise.all([

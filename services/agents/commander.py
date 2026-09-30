@@ -29,6 +29,7 @@ from mc.agent_base import create_agent_app
 from mc.events import emit
 from mc.guardian import job_scopes
 from mc.http import client
+from mc.llm import generate_json
 from mc.planning import Task as PlanTask
 from mc.skills import plan_mission
 from mc.trustgate import NEEDS_APPROVAL, TRUSTED, Policy, verify_result
@@ -45,7 +46,7 @@ def now() -> str:
 
 
 def me() -> str:
-    return state.identity.ans_name
+    return state.identity.ans_name if (state and state.identity) else "ans://v1.0.0.commander.launchpad.xyz"
 
 
 class MissionFailed(Exception):
@@ -290,6 +291,159 @@ async def hire(m: Mission, job: dict) -> tuple[dict, object]:
     return await recruit(m, job)
 
 
+# --- Gemini Master Orchestrator: candidate selection, refusal, supervision ---------------
+
+SELECT_CANDIDATE_SYSTEM = """You are the Gemini Master Orchestrator for CortexAI.
+You are selecting which specialist agent to hire for a specific task in an active mission.
+
+CRITICAL SECURITY RULES:
+1. You may ONLY choose an agent from the provided list of verified candidates.
+2. You CANNOT invent agent names, choose unverified agents, or choose candidates outside this list.
+3. Every candidate in the list has already passed cryptographic Trust Gate verification.
+4. Evaluate candidate capabilities, version, domain reputation, and fit for the task.
+
+Return JSON:
+{
+  "selected_ans_name": str,
+  "rationale": str
+}"""
+
+
+async def gemini_choose_candidate(m: Mission, job: dict, rec: Recruitment,
+                                  verified: list[tuple[dict, object]]) -> tuple[dict, object, str, str]:
+    """Gemini evaluates verified candidates and selects who to hire.
+
+    If Gemini is offline, unavailable, or selects an unverified agent, deterministic preference is used.
+    """
+    def fallback_choice() -> dict:
+        best_cand, _ = verified[0]
+        return {
+            "selected_ans_name": best_cand["ans_name"],
+            "rationale": f"Selected {best_cand.get('org', best_cand['ans_name'])} via deterministic vendor preference policy.",
+        }
+
+    cands_summary = []
+    for cand, res in verified:
+        rec_data = getattr(res, "record", {}) or {}
+        cands_summary.append({
+            "ans_name": cand["ans_name"],
+            "org": rec_data.get("org") or cand.get("org"),
+            "domain": config.parse_ans_name(cand["ans_name"])["domain"],
+            "version": rec_data.get("version") or cand.get("version"),
+            "capabilities": rec_data.get("capabilities") or cand.get("capabilities", []),
+            "endpoint": cand["endpoint"],
+            "source": cand.get("source"),
+        })
+
+    prompt = (
+        f"Mission: {m.text}\n"
+        f"Business: {m.business}\n"
+        f"Job: {job['title']} (capability: {job['capability']})\n"
+        f"Brief: {job.get('brief', '')}\n"
+        f"Requested Scopes: {rec.requested_scopes}\n\n"
+        f"Verified Candidates (choose exactly ONE from this list):\n"
+        f"{cands_summary}"
+    )
+
+    raw, engine = await generate_json(
+        SELECT_CANDIDATE_SYSTEM, prompt, fallback_choice,
+        label="Candidate selection", capability="orchestrator.select_candidate",
+        actor=me(), mission_id=m.id,
+    )
+
+    selected_name = raw.get("selected_ans_name")
+    rationale = raw.get("rationale") or "Selected by Gemini Master Orchestrator"
+
+    # Strictly verify that selected_name is in the verified list
+    match = next(((c, t) for c, t in verified if c["ans_name"] == selected_name), None)
+    if match and engine == "gemini":
+        return match[0], match[1], rationale, "gemini"
+
+    if selected_name and not match and engine == "gemini":
+        await say(m, "candidate.invalid_selection",
+                  f"Gemini proposed candidate {selected_name!r} which is NOT in the verified set. Discarding model choice and applying deterministic policy.",
+                  invalid_candidate=selected_name, capability=job["capability"])
+
+    fallback_cand, fallback_trust = verified[0]
+    fb_rationale = (f"Selected {fallback_cand.get('org', fallback_cand['ans_name'])} via deterministic policy "
+                    f"({'invalid model candidate rejected' if (selected_name and not match) else 'offline engine'}).")
+    return fallback_cand, fallback_trust, fb_rationale, "deterministic_fallback"
+
+
+REFUSAL_SYSTEM = """You are the Gemini Master Orchestrator for CortexAI.
+An agent you hired has refused the job or failed during execution.
+The refusing candidate has been permanently excluded from this role for this mission.
+Decide the next orchestrator action:
+- "search_again": Query ANS and recruit another verified candidate to backfill the job.
+- "fail": Abort the mission if the job is strictly irreplaceable.
+
+Return JSON:
+{
+  "action": "search_again" | "fail",
+  "reasoning": str
+}"""
+
+
+async def gemini_on_refusal(m: Mission, job: dict, cand: dict, refusal_reason: str) -> dict:
+    def fallback():
+        return {
+            "action": "search_again",
+            "reasoning": "Defaulting to ANS search for alternate verified candidate following refusal.",
+        }
+
+    prompt = (
+        f"Mission: {m.text}\n"
+        f"Job: {job['title']} (capability: {job['capability']})\n"
+        f"Agent: {cand.get('org', cand['ans_name'])} ({cand['ans_name']})\n"
+        f"Refusal Reason: {refusal_reason}\n"
+        f"Status: Agent has been permanently excluded from this mission."
+    )
+
+    decision, engine = await generate_json(
+        REFUSAL_SYSTEM, prompt, fallback,
+        label="Refusal resolution", capability="orchestrator.refusal",
+        actor=me(), mission_id=m.id,
+    )
+    if decision.get("action") not in ("search_again", "fail"):
+        decision["action"] = "search_again"
+    return decision
+
+
+SUPERVISION_SYSTEM = """You are the Gemini Master Orchestrator supervising mission execution in CortexAI.
+You review deliverables as tasks complete and determine whether:
+1. "accept": Deliverable meets specifications, proceed to subsequent tasks.
+2. "needs_security_review": The deliverable involves security-sensitive components or the user requested security/verification, so a Shield security review task is required.
+3. "request_revision": The deliverable has deficiencies that require rework.
+
+Return JSON:
+{
+  "status": "accept" | "needs_security_review" | "request_revision",
+  "rationale": str
+}"""
+
+
+async def gemini_supervise_task(m: Mission, task: PlanTask, output: dict, remaining: list[PlanTask]) -> dict:
+    def fallback():
+        return {"status": "accept", "rationale": "Task output verified and accepted by orchestrator."}
+
+    summary_out = {k: v for k, v in output.items() if k != "html"} if isinstance(output, dict) else str(output)
+    prompt = (
+        f"Mission: {m.text}\n"
+        f"Completed Task: {task.title} (capability: {task.capability})\n"
+        f"Task Brief: {task.brief}\n"
+        f"Deliverable Summary: {summary_out}\n"
+        f"Remaining Tasks: {[t.title for t in remaining]}"
+    )
+    res, engine = await generate_json(
+        SUPERVISION_SYSTEM, prompt, fallback,
+        label="Task supervision", capability="orchestrator.supervise",
+        actor=me(), mission_id=m.id,
+    )
+    if res.get("status") not in ("accept", "needs_security_review", "request_revision"):
+        res["status"] = "accept"
+    return res
+
+
 async def recruit(m: Mission, job: dict) -> tuple[dict, object]:
     """Nobody we have can do this. Say so out loud, then go looking."""
     capability = job["capability"]
@@ -321,6 +475,8 @@ async def recruit(m: Mission, job: dict) -> tuple[dict, object]:
         raise MissionFailed(f"No verified agent is available for {capability}")
 
     rec.status = "evaluating"
+    verified: list[tuple[dict, object]] = []
+
     for cand in candidates:
         res = await state.gate.check_agent(cand["ans_name"], cand["endpoint"], capability, m.policy,
                                            mission_id=m.id, source=cand["source"])
@@ -333,36 +489,43 @@ async def recruit(m: Mission, job: dict) -> tuple[dict, object]:
             rec.status = "evaluating"
 
         if admitted:
-            org = res.record["org"]
-            rec.selected, rec.status, rec.finished_at = cand["ans_name"], "admitted", now()
-            # The Guardian issues exactly these when the job goes out; /api/guardian/grants is
-            # the authority on what was actually granted.
-            rec.granted_scopes = list(rec.requested_scopes)
-            m.roster[cand["ans_name"]] = {
-                "ans_name": cand["ans_name"], "endpoint": cand["endpoint"], "org": org,
-                "version": res.record.get("version"), "capabilities": res.record.get("capabilities", []),
-                "trust": res, "hired_at": now(),
-            }
-            await say(m, "agent.admitted", f"{org} passed the Trust Gate and joins the mission",
-                      subject=cand["ans_name"], recruitment_id=rec.id, capability=capability,
-                      ans_name=cand["ans_name"], org=org, granted_scopes=rec.granted_scopes,
+            verified.append((cand, res))
+        else:
+            failed = next((c for c in res.checks if c.ok is False), None)
+            rec.rejected.append({"ans_name": cand["ans_name"], "org": cand.get("org"),
+                                 "failed_check": failed.name if failed else None,
+                                 "reason": failed.detail if failed else "rejected"})
+            await say(m, "agent.rejected", f"{cand.get('org') or cand['ans_name']} was turned away: {res.reason}",
+                      subject=cand["ans_name"], recruitment_id=rec.id, ans_name=cand["ans_name"],
+                      org=cand.get("org"), failed_check=failed.name if failed else None, reason=res.reason,
                       source=cand["source"])
-            return cand, res
+            m.stats["blocked"] += 1
+            m.excluded.add((cand["ans_name"], cand["endpoint"]))
+            await asyncio.sleep(config.pace() / 2)
 
-        failed = next((c for c in res.checks if c.ok is False), None)
-        rec.rejected.append({"ans_name": cand["ans_name"], "org": cand.get("org"),
-                             "failed_check": failed.name if failed else None,
-                             "reason": failed.detail if failed else "rejected"})
-        await say(m, "agent.rejected", f"{cand.get('org') or cand['ans_name']} was turned away: {res.reason}",
-                  subject=cand["ans_name"], recruitment_id=rec.id, ans_name=cand["ans_name"],
-                  org=cand.get("org"), failed_check=failed.name if failed else None, reason=res.reason,
-                  source=cand["source"])
-        m.stats["blocked"] += 1
-        m.excluded.add((cand["ans_name"], cand["endpoint"]))
-        await asyncio.sleep(config.pace() / 2)
+    if not verified:
+        rec.status, rec.finished_at = "rejected", now()
+        raise MissionFailed(f"No verified agent is available for {capability}")
 
-    rec.status, rec.finished_at = "rejected", now()
-    raise MissionFailed(f"No verified agent is available for {capability}")
+    # Gemini Master Orchestrator chooses who to hire among VERIFIED candidates only
+    cand, trust, rationale, source = await gemini_choose_candidate(m, job, rec, verified)
+
+    org = trust.record["org"]
+    rec.selected, rec.status, rec.finished_at = cand["ans_name"], "admitted", now()
+    rec.granted_scopes = list(rec.requested_scopes)
+    m.roster[cand["ans_name"]] = {
+        "ans_name": cand["ans_name"], "endpoint": cand["endpoint"], "org": org,
+        "version": trust.record.get("version"), "capabilities": trust.record.get("capabilities", []),
+        "trust": trust, "hired_at": now(), "selection_source": source, "rationale": rationale,
+    }
+    await say(m, "candidate.selected", f"Master Orchestrator selected {org} ({source}): {rationale}",
+              subject=cand["ans_name"], recruitment_id=rec.id, capability=capability,
+              ans_name=cand["ans_name"], org=org, rationale=rationale, selection_source=source)
+    await say(m, "agent.admitted", f"{org} passed the Trust Gate and joins the mission",
+              subject=cand["ans_name"], recruitment_id=rec.id, capability=capability,
+              ans_name=cand["ans_name"], org=org, granted_scopes=rec.granted_scopes,
+              source=cand["source"], selection_source=source)
+    return cand, trust
 
 
 async def issue_grant(m: Mission, ans_name: str, job_id: str, capability: str) -> list[str]:
@@ -431,7 +594,14 @@ async def run_job(m: Mission, job: dict, job_input: dict, *, revoke_during: str 
         if r.status_code != 200:
             detail = r.json().get("detail", r.text) if r.headers.get("content-type", "").startswith("application/json") else r.text
             await say(m, "result.rejected", f"{org} refused the job: {detail}", subject=cand["ans_name"])
-            await drop("refused")
+            await drop(f"refused: {detail}")
+            refusal_decision = await gemini_on_refusal(m, job, cand, str(detail))
+            await say(m, "orchestrator.refusal_action",
+                      f"Orchestrator resolved refusal: {refusal_decision['action']} — {refusal_decision.get('reasoning', '')}",
+                      action=refusal_decision["action"], reasoning=refusal_decision.get("reasoning"),
+                      excluded=cand["ans_name"])
+            if refusal_decision.get("action") == "fail":
+                raise MissionFailed(f"{org} refused the job ({detail}) and orchestrator aborted mission.")
             continue
 
         result = r.json()
@@ -446,6 +616,12 @@ async def run_job(m: Mission, job: dict, job_input: dict, *, revoke_during: str 
         if not ok:
             await say(m, "result.rejected", why, subject=cand["ans_name"])
             await drop(why)
+            decision = await gemini_on_refusal(m, job, cand, why)
+            await say(m, "orchestrator.refusal_action",
+                      f"Orchestrator handled verification failure for {org}: {decision['action']} — {decision.get('reasoning', '')}",
+                      action=decision["action"], reasoning=decision.get("reasoning"), excluded=cand["ans_name"])
+            if decision.get("action") == "fail":
+                raise MissionFailed(f"{org} deliverable verification failed ({why}) and orchestrator aborted.")
             continue
 
         out = result["payload"]
@@ -457,6 +633,8 @@ async def run_job(m: Mission, job: dict, job_input: dict, *, revoke_during: str 
             "owner_approved": trust.verdict == NEEDS_APPROVAL,
             "log_index": trust.log_index, "fingerprint": result.get("cert_fingerprint"),
             "output_sha256": out["output_sha256"], "signed_at": out["signed_at"], "engine": out.get("engine"),
+            "selection_source": m.roster.get(cand["ans_name"], {}).get("selection_source", "verified"),
+            "rationale": m.roster.get(cand["ans_name"], {}).get("rationale", ""),
         })
         await say(m, "result.verified", f"Verified {org}'s signed {job['title'].lower()}", subject=cand["ans_name"],
                   sha256=out["output_sha256"][:16])
@@ -481,17 +659,25 @@ def build_inputs(m: Mission, task, outputs: dict) -> dict:
     what, which is the same principle as the Guardian's scopes, one level up.
     """
     inputs = {"mission": m.text, "business": m.business, "brief": task.brief}
+    dep_artifacts = {}
     for dep in task.depends_on:
         produced = outputs.get(dep)
         if not isinstance(produced, dict):
             continue
+        dep_artifacts[dep] = produced
         if "html" in produced:
             inputs["html"] = produced["html"]
             inputs["previous_html"] = produced["html"]
         elif "approved" in produced:
             inputs["issues"] = produced.get("issues") or []
-        else:
+        elif "images" in produced:
+            inputs["images"] = produced.get("images") or []
+        elif "palette" in produced:
             inputs["brand_kit"] = produced
+        else:
+            inputs[dep] = produced
+    if dep_artifacts:
+        inputs["artifacts"] = dep_artifacts
     # A site builder needs the brand kit even when the plan only wired it to something else.
     if task.capability == "site.generate" and "brand_kit" not in inputs:
         inputs["brand_kit"] = next((o for o in outputs.values()
@@ -548,6 +734,25 @@ async def run(m: Mission):
                 revoke_during = "webforge"
 
             outputs[task.id] = await run_job(m, job, inputs, revoke_during=revoke_during)
+
+            # Gemini Master Orchestrator supervises the task output
+            supervision = await gemini_supervise_task(m, task, outputs[task.id], remaining=[t for t, _ in queue])
+            await say(m, "orchestrator.supervision",
+                      f"Orchestrator reviewed {task.title}: {supervision.get('status')} — {supervision.get('rationale')}",
+                      task_id=task.id, status=supervision.get("status"), rationale=supervision.get("rationale"))
+
+            # Dynamic security review injection if requested by Gemini and not yet scheduled
+            if supervision.get("status") == "needs_security_review" and not any(j["capability"] == "security.review" for j in m.jobs):
+                sec_task = PlanTask(id=f"{task.id}.sec", title="Security review",
+                                    capability="security.review", brief=f"Security audit following {task.title}",
+                                    depends_on=[task.id])
+                plan.tasks.append(sec_task)
+                new_sec_job = _job(sec_task.title, sec_task.capability, sec_task.brief,
+                                   task_id=sec_task.id, depends_on=sec_task.depends_on)
+                m.jobs.append(new_sec_job)
+                queue.append((sec_task, new_sec_job))
+                await say(m, "mission.task_added", f"Orchestrator added security review by ShieldSec following {task.title}",
+                          task_id=sec_task.id, capability="security.review")
 
             # A failed review sends the work back. The plan did not know it would be needed, so
             # the tasks are added now, wired to the ones that already ran.
