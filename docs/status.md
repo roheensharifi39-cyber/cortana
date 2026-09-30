@@ -2,6 +2,8 @@
 
 # CortexAi — project status
 
+> **Start with [`GUIDE.md`](GUIDE.md)** — the single source of truth, kept current. If this file
+> disagrees with it, the guide is right and this one is stale.
 The single place to find out what this is, what works, and what is still open.
 **Last updated: 18 September 2026 — renamed to CortexAi; the Next.js frontend is the one that ships.**
 

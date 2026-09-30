@@ -11,8 +11,8 @@ generic form.
 You are joining CortexAi, an in-progress hackathon project. Demo is Sunday.
 
 STEP 1 — READ BEFORE WRITING ANYTHING. In this order:
-  1. docs/onboarding.md        the product, the architecture, the vocabulary, the house rules
-  2. docs/status.md            what is built, what is not, what is blocked
+  1. docs/GUIDE.md             the complete picture — product, status, what is real, house rules
+  2. docs/status.md            deeper detail on risks and open decisions
   3. docs/work/README.md       how work is split so we do not collide
   4. docs/work/<PACKET>.md     YOUR brief — scope, tasks, done-criteria
   5. docs/contracts.md         only if your packet touches the API or event stream
@@ -22,14 +22,14 @@ one of them has already cost someone hours.
 
 STEP 2 — ORIENT. Before changing anything:
   git log --oneline -15
-  pytest -q                          # 122 tests, under a second
+  pytest -q                          # 135 tests, under a second
   ls docs/work/fixtures/             # real captured backend output
 
 STEP 3 — CONFIRM, THEN BUILD. Tell me in three or four sentences what you understand your
 packet to be and what you intend to change, then start. If the brief and the code
 disagree, say so rather than guessing which is right.
 
-RULES THAT ARE NOT NEGOTIABLE (docs/onboarding.md §10):
+RULES THAT ARE NOT NEGOTIABLE (docs/GUIDE.md §14):
   - Never show a green check you did not earn. "unverified" is not "pass"; "configured"
     is not "connected".
   - Fail closed, and say which kind of no it was: evidence says no, versus we could not
@@ -56,7 +56,7 @@ VERIFY BEFORE YOU SAY YOU ARE DONE:
 
   TRAP: only one instance can hold the ports. If run_all.py was already running, the new
   one fails to bind and you will be testing stale services with accumulated state. This
-  has already caused two confusing debugging sessions. If results look strange, check
+  has already caused three confusing debugging sessions. If results look strange, check
   this first.
 
 REPORTING:
@@ -75,7 +75,7 @@ Fully unblocked, highest ceiling, needs no credential.
 You are joining CortexAi, an in-progress hackathon project. Demo is Sunday.
 
 Read these before writing anything, in order:
-  docs/onboarding.md, docs/status.md, docs/work/README.md, docs/work/p7-live-discovery.md
+  docs/GUIDE.md, docs/work/README.md, docs/work/p7-live-discovery.md
 
 Then orient: git log --oneline -15 && pytest -q
 
@@ -100,12 +100,19 @@ Put the strategy in a NEW module mc/discovery.py with pure, testable functions. 
 change outside it is inside discover() in services/agents/commander.py — P3 owns the rest
 of that file, so keep your diff inside that one function.
 
-Critical: you will find real agents and you CANNOT hire them. GoDaddy's own Website
-Builder Agent does not resolve publicly; its Logo agent 401s; the one reachable third
-party requires ansMtls/ansJwt/apiKey. DO NOT FAKE A HIRE. Build it so the Commander finds
-a real agent, verifies what it can, stops at the authorization boundary and says so, then
-falls back to an agent we do have authority over and completes the mission. That stop is
-the point of the product, not a failure of it.
+Critical, and nuanced — most real agents cannot be hired, but some can:
+
+  - GoDaddy's own Website Builder Agent: DNS does not resolve publicly. Unreachable.
+  - GoDaddy's Logo Generation Agent: 401. shopagent.cloud: needs ansMtls/ansJwt/apiKey.
+  - BUT the Webmesh fleet is deliberately open: agent.webmesh.ai exposes verify,
+    discover and interact over A2A JSON-RPC with noAuth, and we have successfully
+    called it. supplier.webmesh.ai answers get_quote with noAuth too.
+
+So: DO NOT FAKE A HIRE, and do not claim a refusal that did not happen either. Where an
+agent genuinely cannot be invoked, have the Commander verify what it can, stop at the
+authorization boundary, say exactly why, and fall back to an agent we do have authority
+over. Where one genuinely can be invoked, invoking it is the better demo. That honest
+boundary is the point of the product, not a failure of it.
 
 Keep the simulator path unchanged — ANS_BACKEND=sim must behave exactly as it does today.
 Bound the search: pages, candidates and wall-clock time.
@@ -127,7 +134,7 @@ Critical path. The Next.js app currently makes zero network calls.
 You are joining CortexAi, an in-progress hackathon project. Demo is Sunday.
 
 Read these before writing anything, in order:
-  docs/onboarding.md, docs/status.md, docs/work/README.md,
+  docs/GUIDE.md, docs/work/README.md,
   docs/work/p1-frontend-adapter.md, docs/contracts.md
 
 Then orient: git log --oneline -15 && pytest -q && ls docs/work/fixtures/

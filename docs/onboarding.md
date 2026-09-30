@@ -2,6 +2,8 @@
 
 # CortexAi — context primer
 
+> **Start with [`GUIDE.md`](GUIDE.md)** — the single source of truth, kept current. If this file
+> disagrees with it, the guide is right and this one is stale.
 **Read this first. Then paste the whole file into your AI assistant before asking it for help
 with this project.** It is written to be self-contained: an assistant that has read it can
 reason about the codebase without seeing the code.

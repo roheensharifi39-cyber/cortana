@@ -6,6 +6,8 @@ hand to a separate person or AI session.
 **Updated after:** the frontend merged and was chosen, the rename to CortexAi, live GoDaddy
 discovery proving out, and two dead Gemini keys.
 
+> New to the project? Read [`../GUIDE.md`](../GUIDE.md) first — it is the complete picture.
+
 ## How to use one
 
 **[`CODEX_PROMPT.md`](CODEX_PROMPT.md) has ready-to-paste prompts** for a coding agent — they tell
@@ -25,7 +27,7 @@ Or by hand:
 
 | | Status |
 |---|---|
-| **Backend** | Complete. 122 unit tests, all five demo scenarios green end to end. |
+| **Backend** | Complete. 135 unit tests, all five demo scenarios green end to end. |
 | **Frontend** | Next.js, 6 routes, builds clean — and makes **zero network calls**. |
 | **Live ANS discovery** | **Working today**, no credential, against 216,110 real agents. |
 | **Live ANS identity** | Blocked on a PAT. Resolution and certificates 302 to a login. |
@@ -124,7 +126,7 @@ arrive live and the views keep working.
 ## Rules for every packet
 
 1. **Branch per packet.** `git checkout -b p1-adapter`. Merge to `main` twice a day minimum.
-2. **Run the checks before pushing.** `pytest` (122, under a second) · `npm run typecheck && npm run build` · anything structural: `python scripts/smoke_test.py`.
+2. **Run the checks before pushing.** `pytest` (135, under a second) · `npm run typecheck && npm run build` · anything structural: `python scripts/smoke_test.py`.
 3. **Stay in your files.** Need something elsewhere? Ask; don't reach in.
 4. **The house rules in [`../onboarding.md`](../onboarding.md) §10 are not negotiable.** Never show
    a green check you did not earn. `unverified` is not `pass`. No secret reaches the browser. No
